@@ -1,0 +1,184 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudFormation Russian Roulette – demo of five tiny edits that wipe or break resources.
+  Uncomment ONE # PAPER CUT line at a time, create a Change Set, and inspect the “Replace/Delete” actions.
+
+#########################################################################
+# PROTECTION QUICK WINS – copy-paste these habits into real templates
+#
+# • Always add BOTH:
+#     DeletionPolicy: Retain
+#     UpdateReplacePolicy: Retain
+#   on anything that stores data.
+# • Keep snapshots/exports outside the stack (RDS snapshots, DynamoDB
+#   exports, OpenSearch snapshots, etc.).
+# • Attach a stack policy that DENIES "Resource:Replace" on stateful
+#   resources.
+# • Always run `aws cloudformation create-change-set` and read every
+#   “Replace” flag before executing – your production depends on it.
+#########################################################################
+
+Resources:
+  #############################################################
+  # 1. CHANGE OF LOGICAL ID (DynamoDB)
+  #############################################################
+  # Rename the logical ID below from "SafeUserTable" to "UsersTable"
+  # to watch CloudFormation drop the original table at update time.
+  # UsersTable:
+  SafeUserTable:                        # <- safe logical ID
+    Type: AWS::DynamoDB::Table
+    # DeletionPolicy: Retain
+    # UpdateReplacePolicy: Retain
+    Properties:
+      TableName: users-prod            # explicit name protects against name drift
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+  # Avoid: never rename logical IDs on stateful resources; if you must,
+  #        nest them in a child stack and update there.
+
+  #############################################################
+  # 2. TWEAK A NAME PROPERTY (DynamoDB)
+  #############################################################
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    # DeletionPolicy: Retain
+    # UpdateReplacePolicy: Retain
+    Properties:
+      # PAPER CUT – comment the next line and uncomment the one below
+      # to trigger table replacement and data loss.
+      TableName: orders-prod
+      # TableName: orders              # <- PAPER CUT
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: orderId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: orderId
+          KeyType: HASH
+  # Solution: keep physical names immutable; use an alias or CNAME-style
+  #           indirection if you need a friendlier label.
+
+  #############################################################
+  # 3. SWITCH SUBNET GROUP ON A STATEFUL RDS INSTANCE
+  #############################################################
+  DemoVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DemoVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DemoVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+  SubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DemoVPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  DbSubnetGroupA:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: for-demo
+      SubnetIds:
+        - !Ref SubnetA
+        - !Ref SubnetB
+  DbSubnetGroupB:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: alt-for-demo
+      SubnetIds:
+        - !Ref SubnetB
+        - !Ref SubnetC
+
+  DemoDB:
+    Type: AWS::RDS::DBInstance
+    # DeletionPolicy: Retain
+    # UpdateReplacePolicy: Retain
+    Properties:
+      DBInstanceIdentifier: demodb
+      Engine: postgres
+      MasterUsername: demo
+      MasterUserPassword: Demo1234!
+      AllocatedStorage: 20
+      DBInstanceClass: db.t4g.micro
+      # PAPER CUT – flip to DbSubnetGroupB for a full DB replacement
+      DBSubnetGroupName: !Ref DbSubnetGroupA
+      # DBSubnetGroupName: !Ref DbSubnetGroupB   # <- PAPER CUT
+  # Fix: migrate with blue/green, or use Multi-AZ + controlled fail-over.
+
+  #############################################################
+  # 4. CROSS-STACK EXPORT NAME CHANGE
+  #############################################################
+  Outputs:
+    VpcId:
+      Description: VPC id exported to other stacks
+      Value: !Ref DemoVPC
+      Export:
+        # PAPER CUT – rename export to break every consumer stack
+        Name: SharedVPC-Id
+        # Name: Shared-VPC-Id          # <- PAPER CUT
+  # Prevention: treat export names as API contracts – never change them.
+
+  #############################################################
+  # 5. SQS QUEUE → FIFO FLIP (breaks Lambda source mapping)
+  #############################################################
+  WorkQueue:
+    Type: AWS::SQS::Queue
+    # DeletionPolicy: Retain
+    # UpdateReplacePolicy: Retain
+    Properties:
+      QueueName: work-queue
+      # PAPER CUT – set FifoQueue to true (and remember the *.fifo suffix!)
+      # FifoQueue: false              # BUG: Unknown Attribute FifoQueue
+      # FifoQueue: true               # <- PAPER CUT (forces replacement)
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonSQSFullAccess
+
+  DemoFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              print("event", event)
+
+  Mapping:
+    Type: AWS::Lambda::EventSourceMapping
+    DependsOn: WorkQueue
+    Properties:
+      FunctionName: !Ref DemoFunction
+      EventSourceArn: !GetAtt WorkQueue.Arn
+      BatchSize: 10
+  # Safer path: create a new FIFO queue, wire the mapping first, cut traffic,
+  #             then decommission the old queue.
