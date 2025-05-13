@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   CloudFormation Russian Roulette – demo of five tiny edits that wipe or break resources.
-  Uncomment ONE # PAPER CUT line at a time, create a Change Set, and inspect the “Replace/Delete” actions.
+  Uncomment ONE # PAPER CUT line at a time, create a Change Set, and inspect the "Replace/Delete" actions.
 
 #########################################################################
 # PROTECTION QUICK WINS – copy-paste these habits into real templates
@@ -15,7 +15,7 @@ Description: >
 # • Attach a stack policy that DENIES "Resource:Replace" on stateful
 #   resources.
 # • Always run `aws cloudformation create-change-set` and read every
-#   “Replace” flag before executing – your production depends on it.
+#   "Replace" flag before executing – your production depends on it.
 #########################################################################
 
 Resources:
@@ -123,19 +123,6 @@ Resources:
   # Fix: migrate with blue/green, or use Multi-AZ + controlled fail-over.
 
   #############################################################
-  # 4. CROSS-STACK EXPORT NAME CHANGE
-  #############################################################
-  Outputs:
-    VpcId:
-      Description: VPC id exported to other stacks
-      Value: !Ref DemoVPC
-      Export:
-        # PAPER CUT – rename export to break every consumer stack
-        Name: SharedVPC-Id
-        # Name: Shared-VPC-Id          # <- PAPER CUT
-  # Prevention: treat export names as API contracts – never change them.
-
-  #############################################################
   # 5. SQS QUEUE → FIFO FLIP (breaks Lambda source mapping)
   #############################################################
   WorkQueue:
@@ -182,3 +169,16 @@ Resources:
       BatchSize: 10
   # Safer path: create a new FIFO queue, wire the mapping first, cut traffic,
   #             then decommission the old queue.
+
+Outputs:
+  #############################################################
+  # 4. CROSS-STACK EXPORT NAME CHANGE
+  #############################################################
+  VpcId:
+    Description: VPC id exported to other stacks
+    Value: !Ref DemoVPC
+    Export:
+      # PAPER CUT – rename export to break every consumer stack
+      Name: SharedVPC-Id
+      # Name: Shared-VPC-Id          # <- PAPER CUT
+  # Prevention: treat export names as API contracts – never change them.
